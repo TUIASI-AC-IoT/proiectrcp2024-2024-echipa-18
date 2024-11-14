@@ -69,4 +69,4 @@ Serverul este configurat să ruleze pe adresa IP `127.0.0.1` (localhost) și pe 
 
 Mai multe detalii pot fi găsite în [documentația `packet_creator.py`](Docs/packet_creator.md).
 
-Mai multe detalii referitor la îtnregul proiect pot fi găsite în [`documentația oficiala`(/Documentatie Broker MQTT.pdf).
+Mai multe detalii referitor la îtnregul proiect pot fi găsite în [(Documentatie Broker MQTT.pdf)](https://github.com/TUIASI-AC-IoT/proiectrcp2024-2024-echipa-18#:~:text=19%20minutes%20ago-,Documentatie%20Broker%20MQTT.pdf,-Add%20files%20via).
