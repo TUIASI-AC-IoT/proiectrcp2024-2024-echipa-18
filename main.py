@@ -96,4 +96,4 @@ while True:
     client_thread = threading.Thread(target=handle_client, args=(s_conn, client_addr))
     client_thread.start()
 #sa vedem daca merge git
-#test git Alin
+#test git Alin 2
