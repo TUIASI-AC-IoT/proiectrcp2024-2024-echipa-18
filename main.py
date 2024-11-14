@@ -95,3 +95,4 @@ while True:
     # Start a new thread to handle the connected client
     client_thread = threading.Thread(target=handle_client, args=(s_conn, client_addr))
     client_thread.start()
+#sa vedem daca merge git
