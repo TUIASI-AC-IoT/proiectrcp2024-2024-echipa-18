@@ -69,4 +69,4 @@ Serverul este configurat să ruleze pe adresa IP `127.0.0.1` (localhost) și pe 
 
 Mai multe detalii pot fi găsite în [documentația `packet_creator.py`](Docs/packet_creator.md).
 
-Mai multe detalii referitor la îtnregul proiect pot fi găsite în [`documentația oficiala`(Documentatie Broker MQTT.pdf).
+Mai multe detalii referitor la îtnregul proiect pot fi găsite în [`documentația oficiala`(/Documentatie Broker MQTT.pdf).
