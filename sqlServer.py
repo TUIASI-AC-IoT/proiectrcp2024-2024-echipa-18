@@ -183,3 +183,15 @@ class SQLServer:
         except sqlite3.Error as e:
             print(f"Error checking connection rate for client '{client_id}': {e}")
             return True
+
+    def update_disconnect_time(self, client_id: str) -> None:
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE clients SET last_seen = CURRENT_TIMESTAMP, connected = 0 WHERE client_id = ?",
+                    (client_id,)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print(f"Error updating disconnect time for client '{client_id}': {e}")
