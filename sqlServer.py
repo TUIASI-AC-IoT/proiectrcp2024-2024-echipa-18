@@ -7,6 +7,8 @@ import threading
 from datetime import datetime
 
 class SQLServer:
+    """Initializes and configures the MQTT SQL server with essential parameters and database setup."""
+
     def __init__(self, db_name="mqtt_server.db", SUPPORTED_MQTT_VERSION=5.0, MAX_CONNECTIONS=50, MIN_CONNECTION_INTERVAL=1, MAX_CLIENT_ID_LENGTH=23):
         # Initialize server parameters and set up database tables
         self.db_name = db_name
@@ -18,10 +20,14 @@ class SQLServer:
         self.setup_tables()  # Create database tables if they don’t exist
 
     def _get_connection(self):
-        # Create a new connection for each thread
+        """Creates and returns a new SQLite connection for the current thread."""
         return sqlite3.connect(self.db_name, check_same_thread=False)
 
     def setup_tables(self):
+        """
+        Creates all necessary database tables for managing MQTT server clients, topics, subscriptions, messages, and related data.
+        """
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             # Create tables if they don't exist
@@ -272,6 +278,9 @@ class SQLServer:
             return False
 
     def save_subscription(self, client_id: str, topic: str, qos: int) -> bool:
+        """
+        Saves a subscription for a client to a specific topic with the specified QoS level.
+        """
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -310,6 +319,11 @@ class SQLServer:
             return False
 
     def save_message(self, message: Message) -> bool:
+        """
+        Saves a message to the database, associating it with a topic.
+        If the topic does not exist, it will be created.
+        Handles retained messages by updating the topic's retained message details.
+        """
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -348,6 +362,10 @@ class SQLServer:
             return False
 
     def save_will_message(self, client_id: str, topic: str, message: str, qos: int = 0, retain: bool = False) -> bool:
+        """
+        Saves a Last Will and Testament (LWT) message for a client.
+        Associates the will message with a topic, creating the topic if it does not exist.
+        """
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -373,6 +391,9 @@ class SQLServer:
 
 
     def update_disconnect_time(self, client_id: str) -> None:
+        """
+        Updates the last seen timestamp and marks the client as disconnected in the database.
+        """
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -385,6 +406,10 @@ class SQLServer:
             print(f"Error updating disconnect time for client '{client_id}': {e}")
 
     def get_subscribers(self, topic_name: str) -> List[Tuple[str, int]]:
+        """
+        Retrieves a list of subscribers to a given topic, including both exact and wildcard matches.
+        Returns a list of tuples containing client IDs and QoS levels.
+        """
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -466,6 +491,10 @@ class SQLServer:
             return False
 
     def retrieve_message_by_packet_id(self, packet_id):
+        """
+        Retrieves a message from the database using the given packet ID.
+        Returns a Message object if found, otherwise returns None.
+        """
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
