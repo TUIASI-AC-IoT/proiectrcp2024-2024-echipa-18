@@ -1,11 +1,13 @@
 import sqlite3
-from typing import Tuple
+from typing import Optional, List, Tuple
+from client import Client
+from message import Message
 import hashlib
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 
 class SQLServer:
-    def __init__(self, db_name="mqtt_server.db", SUPPORTED_MQTT_VERSION=5.0, MAX_CONNECTIONS=10, MIN_CONNECTION_INTERVAL=1, MAX_CLIENT_ID_LENGTH=23):
+    def __init__(self, db_name="mqtt_server.db", SUPPORTED_MQTT_VERSION=5.0, MAX_CONNECTIONS=50, MIN_CONNECTION_INTERVAL=1, MAX_CLIENT_ID_LENGTH=23):
         # Initialize server parameters and set up database tables
         self.db_name = db_name
         self.SUPPORTED_MQTT_VERSION = SUPPORTED_MQTT_VERSION
@@ -16,20 +18,17 @@ class SQLServer:
         self.setup_tables()  # Create database tables if they don’t exist
 
     def _get_connection(self):
-        # Create a new database connection for each thread
+        # Create a new connection for each thread
         return sqlite3.connect(self.db_name, check_same_thread=False)
 
     def setup_tables(self):
-        # Set up the required database tables for storing client information
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            # SQL command to create the clients table if it does not already exist
+            # Create tables if they don't exist
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS clients (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     client_id TEXT NOT NULL UNIQUE,
-                    username TEXT,  -- Username associated with the client
-                    password TEXT,  -- Hashed password for security
                     banned BOOLEAN DEFAULT 0,  -- Indicates if the client is banned
                     clean_session BOOLEAN DEFAULT 1,
                     connected BOOLEAN DEFAULT 0,
@@ -38,7 +37,74 @@ class SQLServer:
                     last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            conn.commit()  # Save changes to the database
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password TEXT -- Hashed password for security
+                );
+            """)
+
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS topics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    parent_id INTEGER,  -- Reference to parent topic (NULL for root topics)
+                    topic_name TEXT NOT NULL,
+                    full_path TEXT UNIQUE NOT NULL,  -- Full topic path (e.g., "home/livingroom")
+                    retained_message TEXT,  -- Latest retained message (optional)
+                    retained_qos INTEGER DEFAULT 0,  -- QoS of the retained message
+                    retained_timestamp DATETIME,  -- Timestamp of the retained message
+                    FOREIGN KEY (parent_id) REFERENCES topics (id) ON DELETE CASCADE
+                );
+            """)
+            cursor.execute("""
+           CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id TEXT NOT NULL,
+                topic_id INTEGER,  -- Allow NULL for wildcard topics
+                topic_filter TEXT,  -- Stores the topic filter for wildcard subscriptions
+                qos INTEGER DEFAULT 0,
+                FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE CASCADE,
+                FOREIGN KEY (topic_id) REFERENCES topics (id) ON DELETE CASCADE
+            );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic_id INTEGER NOT NULL,  -- Links to the `topics` table
+                    payload TEXT NOT NULL,  -- The message content
+                    qos INTEGER DEFAULT 0,
+                    retain BOOLEAN DEFAULT 0,
+                    packet_id INTEGER,  -- Stores the packet identifier for QoS 1 and 2 messages
+                    published_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (topic_id) REFERENCES topics (id) ON DELETE CASCADE
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS topic_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic_id INTEGER NOT NULL,  -- Links to the `topics` table
+                    message_id INTEGER NOT NULL,  -- Links to the `messages` table
+                    FOREIGN KEY (topic_id) REFERENCES topics (id) ON DELETE CASCADE,
+                    FOREIGN KEY (message_id) REFERENCES messages (id) ON DELETE CASCADE
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS will_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    client_id TEXT NOT NULL,
+                    topic_id INTEGER NOT NULL,  -- Links to the `topics` table
+                    message TEXT NOT NULL,
+                    qos INTEGER DEFAULT 0,
+                    retain BOOLEAN DEFAULT 0,
+                    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE CASCADE,
+                    FOREIGN KEY (topic_id) REFERENCES topics (id) ON DELETE CASCADE
+                );
+            """)
+            conn.commit()
 
     def store_client(self, decoded_packet: dict) -> Tuple[int, int]:
         """
@@ -82,7 +148,7 @@ class SQLServer:
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT password, username FROM clients WHERE client_id = ?", (client_id,))
+                cursor.execute("SELECT password, username FROM users WHERE username = ?", (username,))
                 existing_record = cursor.fetchone()
 
                 # Validate username and password if client already exists
@@ -98,20 +164,39 @@ class SQLServer:
 
                 # Insert or update client record in the database
                 query = """
-                INSERT INTO clients (client_id, username, password, session_expiry, keep_alive, connected)
-                VALUES (?, ?, ?, ?, ?, 1)
+                INSERT INTO clients (client_id, session_expiry, keep_alive, connected)
+                VALUES (?, ?, ?, 1)
                 ON CONFLICT(client_id) DO UPDATE SET
-                    username=excluded.username,
-                    password=excluded.password,
                     connected=1,
                     session_expiry=excluded.session_expiry,
                     keep_alive=excluded.keep_alive,
                     last_seen=CURRENT_TIMESTAMP
                 """
-                cursor.execute(query, (client_id, username, password_hash, decoded_packet.get("session_expiry", 0), decoded_packet.get("keep_alive", 60)))
+                cursor.execute(query, (client_id, decoded_packet.get("session_expiry", 0),
+                                       decoded_packet.get("keep_alive", 60)))
                 conn.commit()  # Save changes to the database
 
-                return (0x00, 0x00)  # Connection Success
+                query = """
+                INSERT INTO users (username, password)
+                VALUES (?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    username=excluded.username,
+                    password=excluded.password
+                """
+                cursor.execute(query, (username, password_hash))
+                conn.commit()  # Save changes to the database
+
+            # Handle Last Will if provided
+            if decoded_packet.get("will_flag"):
+                self.save_will_message(
+                    client_id=client_id,
+                    topic=decoded_packet.get("will_topic"),
+                    message=decoded_packet.get("will_message"),
+                    qos=decoded_packet.get("will_properties", {}).get("will_qos", 0),
+                    retain=decoded_packet.get("will_properties", {}).get("will_retain", False),
+                )
+
+            return (0x00, 0x00)  # Connection Success
 
         except sqlite3.IntegrityError as e:
             print(f"Error storing client '{client_id}': {e}")
@@ -184,6 +269,109 @@ class SQLServer:
             print(f"Error checking connection rate for client '{client_id}': {e}")
             return True
 
+            return False
+
+    def save_subscription(self, client_id: str, topic: str, qos: int) -> bool:
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Check if the topic contains wildcards
+                if '+' in topic or '#' in topic:
+                    topic_id = None  # No topic ID since wildcards are not actual topics
+                    topic_filter = topic  # Store the topic filter directly
+                else:
+                    # Check if the topic exists in the topics table
+                    cursor.execute("SELECT id FROM topics WHERE full_path = ?", (topic,))
+                    topic_result = cursor.fetchone()
+
+                    # Insert topic into the topics table if it doesn't exist
+                    if not topic_result:
+                        cursor.execute(
+                            "INSERT INTO topics (topic_name, full_path) VALUES (?, ?)",
+                            (topic.split('/')[-1], topic)
+                        )
+                        conn.commit()
+                        topic_id = cursor.lastrowid
+                    else:
+                        topic_id = topic_result[0]
+                    topic_filter = None  # No need to store topic filter for exact topics
+
+                # Insert subscription into the subscriptions table
+                cursor.execute("""
+                    INSERT INTO subscriptions (client_id, topic_id, topic_filter, qos)
+                    VALUES ((SELECT client_id FROM clients WHERE client_id = ?), ?, ?, ?)
+                """, (client_id, topic_id, topic_filter, qos))
+
+                conn.commit()
+                return True
+        except sqlite3.Error as e:
+            print(f"Error saving subscription for client '{client_id}' on topic '{topic}': {e}")
+            return False
+
+    def save_message(self, message: Message) -> bool:
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id FROM topics WHERE full_path = ?", (message.topic,))
+                topic_result = cursor.fetchone()
+                if not topic_result:
+                    # Create topic if it doesn't exist
+                    cursor.execute("INSERT INTO topics (topic_name, full_path) VALUES (?, ?)",
+                                   (message.topic.split('/')[-1], message.topic))
+                    conn.commit()
+                    topic_id = cursor.lastrowid
+                else:
+                    topic_id = topic_result[0]
+
+                # Save the message
+                query = """
+                INSERT INTO messages (topic_id, payload, qos, retain, packet_id, published_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """
+                cursor.execute(query, (topic_id, message.payload, message.qos, message.retain, message.packet_id))
+                conn.commit()
+
+                # If the message is retained, update the topics table
+                if message.retain:
+                    update_query = """
+                    UPDATE topics
+                    SET retained_message = ?, retained_qos = ?, retained_timestamp = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """
+                    cursor.execute(update_query, (message.payload, message.qos, topic_id))
+                    conn.commit()
+
+                return True
+        except sqlite3.Error as e:
+            print(f"Error saving message: {e}")
+            return False
+
+    def save_will_message(self, client_id: str, topic: str, message: str, qos: int = 0, retain: bool = False) -> bool:
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id FROM topics WHERE full_path = ?", (topic,))
+                topic_result = cursor.fetchone()
+                if not topic_result:
+                    cursor.execute("INSERT INTO topics (topic_name, full_path) VALUES (?, ?)", (topic.split('/')[-1], topic))
+                    conn.commit()
+                    topic_id = cursor.lastrowid
+                else:
+                    topic_id = topic_result[0]
+
+                query = """
+                INSERT INTO will_messages (client_id, topic_id, message, qos, retain, registered_at)
+                VALUES ((SELECT client_id FROM clients WHERE client_id = ?), ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """
+                cursor.execute(query, (client_id, topic_id, message, qos, retain))
+                conn.commit()
+                return True
+        except sqlite3.Error as e:
+            print(f"Error saving will message for client '{client_id}' on topic '{topic}': {e}")
+            return False
+
+
     def update_disconnect_time(self, client_id: str) -> None:
         try:
             with self._get_connection() as conn:
@@ -195,3 +383,250 @@ class SQLServer:
                 conn.commit()
         except sqlite3.Error as e:
             print(f"Error updating disconnect time for client '{client_id}': {e}")
+
+    def get_subscribers(self, topic_name: str) -> List[Tuple[str, int]]:
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Fetch all subscriptions
+                cursor.execute("""
+                    SELECT DISTINCT subscriptions.client_id, subscriptions.qos, subscriptions.topic_id, topics.full_path
+                    FROM subscriptions
+                    LEFT JOIN topics ON subscriptions.topic_id = topics.id
+                    JOIN clients ON subscriptions.client_id = clients.client_id
+                    WHERE clients.connected = 1
+                """)
+                all_subscriptions = cursor.fetchall()
+
+                # Filter matches based on wildcards and exact matches
+                matched_subscribers = []
+                for client_id, qos, topic_id, subscription_topic in all_subscriptions:
+                    if subscription_topic:
+                        # Exact topic subscription
+                        if self.matches_wildcard(subscription_topic, topic_name):
+                            matched_subscribers.append((client_id, qos))
+                    else:
+                        # Wildcard subscription (topic_id is None)
+                        # The topic filter is stored elsewhere; you need to adjust your subscriptions table
+                        # to store the topic filter as a string for wildcard subscriptions
+                        cursor.execute("""
+                            SELECT topic_filter FROM subscriptions
+                            WHERE client_id = ? AND topic_id IS NULL
+                        """, (client_id,))
+                        wildcard_subscription = cursor.fetchone()
+                        if wildcard_subscription and self.matches_wildcard(wildcard_subscription[0], topic_name):
+                            matched_subscribers.append((client_id, qos))
+
+                return matched_subscribers
+
+        except sqlite3.Error as e:
+            print(f"Error getting subscribers for topic '{topic_name}': {e}")
+            return []
+
+    def remove_subscription(self, client_id: str, topic: str) -> bool:
+        """
+        Removes a subscription for the given client and topic.
+        Handles both direct topic subscriptions and wildcard topic filters.
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Check for wildcard topic filter
+                cursor.execute("""
+                    DELETE FROM subscriptions
+                    WHERE client_id = ? AND topic_filter = ?
+                """, (client_id, topic))
+                wildcard_deleted = cursor.rowcount > 0
+
+                # Check for direct topic subscription
+                cursor.execute("SELECT id FROM topics WHERE full_path = ?", (topic,))
+                topic_result = cursor.fetchone()
+                if topic_result:
+                    topic_id = topic_result[0]
+                    cursor.execute("""
+                        DELETE FROM subscriptions
+                        WHERE client_id = ? AND topic_id = ?
+                    """, (client_id, topic_id))
+                    direct_deleted = cursor.rowcount > 0
+                else:
+                    direct_deleted = False
+
+                if wildcard_deleted or direct_deleted:
+                    conn.commit()
+                    print(f"Subscription for client '{client_id}' to topic '{topic}' removed successfully.")
+                    return True
+                else:
+                    print(f"No subscription found for client '{client_id}' on topic '{topic}'.")
+                    return False
+
+        except sqlite3.Error as e:
+            print(f"Error removing subscription for client '{client_id}' on topic '{topic}': {e}")
+            return False
+
+    def retrieve_message_by_packet_id(self, packet_id):
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                query = """
+                SELECT topics.full_path, messages.payload, messages.qos, messages.retain, messages.packet_id
+                FROM messages
+                JOIN topics ON messages.topic_id = topics.id
+                WHERE messages.packet_id = ?
+                """
+                cursor.execute(query, (packet_id,))
+                result = cursor.fetchone()
+
+                if result:
+                    topic, payload, qos, retain, packet_id = result
+                    return Message(topic=topic, payload=payload, qos=qos, retain=retain, packet_id=packet_id)
+                else:
+                    return None
+        except sqlite3.Error as e:
+            print(f"Error retrieving message by packet ID '{packet_id}': {e}")
+            return None
+
+    def matches_wildcard(self, subscription: str, topic: str) -> bool:
+        """
+        Checks if a topic matches a wildcard subscription.
+        Supports:
+        - Single-level wildcard `+`
+        - Multi-level wildcard `#`
+        """
+        subscription_levels = subscription.split('/')
+        topic_levels = topic.split('/')
+
+        for sub_level, topic_level in zip(subscription_levels, topic_levels):
+            if sub_level == '+':
+                continue  # Single-level wildcard matches anything at this level
+            if sub_level == '#':
+                return True  # Multi-level wildcard matches everything after
+            if sub_level != topic_level:
+                return False
+
+        # If all levels match, check for trailing wildcards
+        if len(subscription_levels) > len(topic_levels):
+            return subscription_levels[len(topic_levels)] == '#'
+
+        return len(subscription_levels) == len(topic_levels)
+
+    def retrieve_last_will(self, client_id: str) -> Optional[dict]:
+        """
+        Retrieve the Last Will message for the specified client.
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                query = """
+                SELECT topics.full_path, will_messages.message, will_messages.qos, will_messages.retain
+                FROM will_messages
+                JOIN topics ON will_messages.topic_id = topics.id
+                WHERE will_messages.client_id = ?
+                """
+                cursor.execute(query, (client_id,))
+                result = cursor.fetchone()
+                if result:
+                    topic, message, qos, retain = result
+                    return {
+                        "topic": topic,
+                        "message": message,
+                        "qos": qos,
+                        "retain": retain
+                    }
+                return None
+        except sqlite3.Error as e:
+            print(f"Error retrieving Last Will for client '{client_id}': {e}")
+            return None
+
+    def remove_last_will(self, client_id: str) -> bool:
+        """
+        Removes the Last Will message for the specified client.
+        Returns True if the operation was successful, False otherwise.
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                query = "DELETE FROM will_messages WHERE client_id = ?"
+                cursor.execute(query, (client_id,))
+                if cursor.rowcount > 0:
+                    conn.commit()
+                    print(f"Last Will message for client '{client_id}' successfully removed.")
+                    return True
+                else:
+                    print(f"No Last Will message found for client '{client_id}'.")
+                    return False
+        except sqlite3.Error as e:
+            print(f"Error removing Last Will for client '{client_id}': {e}")
+            return False
+
+    def remove_all_subscriptions_for_client(self, client_id: str) -> bool:
+        """
+        Removes all subscriptions for a given client ID from the database.
+        This is typically used when a client disconnects with `clean_flag = 1`.
+        Returns True if at least one subscription is removed, False otherwise.
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Delete all subscriptions for the given client ID
+                query = """
+                DELETE FROM subscriptions WHERE client_id = ?
+                """
+                cursor.execute(query, (client_id,))
+
+                # Check if any rows were affected
+                if cursor.rowcount > 0:
+                    conn.commit()
+                    return True
+                else:
+                    print(f"No subscriptions found for client '{client_id}'.")
+                    return False
+
+        except sqlite3.Error as e:
+            print(f"Error removing subscriptions for client '{client_id}': {e}")
+            return False
+
+    def return_last_retained_message(self, topic: str) -> Optional[Message]:
+        """
+        Retrieves the last retained message for a specific topic.
+        Returns a Message object if a retained message exists, otherwise None.
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Query the topics table for the retained message
+                query = """
+                SELECT retained_message, retained_qos, retained_timestamp
+                FROM topics
+                WHERE full_path = ?
+                """
+                cursor.execute(query, (topic,))
+                result = cursor.fetchone()
+
+                if result:
+                    retained_message, retained_qos, retained_timestamp = result
+
+                    if retained_message is not None:
+                        # Return a Message object with the retained message details
+                        return Message(
+                            topic=topic,
+                            payload=retained_message,
+                            qos=retained_qos,
+                            retain=True,
+                            packet_id=None,  # Retained messages generally do not have a packet ID
+                            published_at=retained_timestamp
+                        )
+
+                print(f"No retained message found for topic '{topic}'.")
+                return None
+
+        except sqlite3.Error as e:
+            print(f"Error retrieving retained message for topic '{topic}': {e}")
+            return None
+
+    def close(self):
+        # Connections are managed per-thread, so no need to close here
+        pass
