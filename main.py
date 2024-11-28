@@ -30,8 +30,6 @@ dispatcher = MessageDispatcher(db)
 
 def handle_client(conn, addr):
     # Create a new SQLServer instance for this thread
-
-
     print(f"Connection accepted from {addr}")
     connected_client = None
 
@@ -192,8 +190,9 @@ def handle_client(conn, addr):
                     # Fetch and dispatch retained messages for each subscribed topic
                     for topic in topics:
                         topic_filter = topic["topic_filter"]
-                        retained_message = db.return_last_retained_message(topic_filter)
-                        if retained_message:
+                        retained_messages = db.return_last_retained_messages(topic_filter)
+
+                        for retained_message in retained_messages:
                             dispatcher.dispatch_message(retained_message, {connected_client.client_id: conn})
 
                 elif decoded_packet.get("packet_type") == "UNSUBSCRIBE":
@@ -265,4 +264,3 @@ while True:
     s_conn, client_addr = s_server.accept()
     client_thread = threading.Thread(target=handle_client, args=(s_conn, client_addr))
     client_thread.start()
-

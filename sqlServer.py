@@ -588,44 +588,61 @@ class SQLServer:
             print(f"Error removing subscriptions for client '{client_id}': {e}")
             return False
 
-    def return_last_retained_message(self, topic: str) -> Optional[Message]:
+    from typing import List
+
+    def return_last_retained_messages(self, topic_filter: str) -> List[Message]:
         """
-        Retrieves the last retained message for a specific topic.
-        Returns a Message object if a retained message exists, otherwise None.
+        Retrieves the last retained messages matching a specific topic filter.
+        Supports wildcards ('+' for single level, '#' for multi-level).
+        Returns a list of Message objects if retained messages exist, otherwise an empty list.
         """
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
 
-                # Query the topics table for the retained message
-                query = """
-                SELECT retained_message, retained_qos, retained_timestamp
-                FROM topics
-                WHERE full_path = ?
-                """
-                cursor.execute(query, (topic,))
-                result = cursor.fetchone()
+                if "+" in topic_filter or "#" in topic_filter:
+                    # Convert MQTT wildcards to SQL LIKE pattern
+                    like_pattern = topic_filter.replace("+", "_").replace("#", "%")
+                    query = """
+                    SELECT full_path, retained_message, retained_qos, retained_timestamp
+                    FROM topics
+                    WHERE full_path LIKE ?
+                    """
+                    cursor.execute(query, (like_pattern,))
+                else:
+                    # Exact match for non-wildcard topics
+                    query = """
+                    SELECT full_path, retained_message, retained_qos, retained_timestamp
+                    FROM topics
+                    WHERE full_path = ?
+                    """
+                    cursor.execute(query, (topic_filter,))
 
-                if result:
-                    retained_message, retained_qos, retained_timestamp = result
+                # Fetch all matching rows
+                results = cursor.fetchall()
 
+                # Construct a list of Message objects for topics with retained messages
+                retained_messages = []
+                for full_path, retained_message, retained_qos, retained_timestamp in results:
                     if retained_message is not None:
-                        # Return a Message object with the retained message details
-                        return Message(
-                            topic=topic,
-                            payload=retained_message,
-                            qos=retained_qos,
-                            retain=True,
-                            packet_id=None,  # Retained messages generally do not have a packet ID
-                            published_at=retained_timestamp
+                        retained_messages.append(
+                            Message(
+                                topic=full_path,
+                                payload=retained_message,
+                                qos=retained_qos,
+                                retain=True,
+                                packet_id=None,  # Retained messages do not have a packet ID
+                                published_at=retained_timestamp
+                            )
                         )
 
-                print(f"No retained message found for topic '{topic}'.")
-                return None
+                if not retained_messages:
+                    print(f"No retained messages found for topic filter '{topic_filter}'.")
+                return retained_messages
 
         except sqlite3.Error as e:
-            print(f"Error retrieving retained message for topic '{topic}': {e}")
-            return None
+            print(f"Error retrieving retained messages for topic filter '{topic_filter}': {e}")
+            return []
 
     def close(self):
         # Connections are managed per-thread, so no need to close here
