@@ -8,13 +8,19 @@ from message_dispatcher import MessageDispatcher
 from packet_creator import (
     create_connack_packet,
     create_pingresp_packet,
-    create_disconnect_packet,
     create_puback_packet,
     create_pubrec_packet,
     create_pubcomp_packet,
     create_suback_packet,
     create_unsuback_packet
 )
+
+#TO DO: de transformat main.py intr-o clasa
+#care sa fie apelata din GUI
+#unde sa avem un buton de pe care sa putem da
+#start server/stop server
+#practic sa avem un init
+#care sa functioneze
 
 # Server setup
 IP_ADDR = '127.0.0.1'
