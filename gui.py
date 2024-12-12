@@ -4,10 +4,18 @@ from PyQt5.QtWidgets import (
     QTabWidget, QListWidget, QListWidgetItem, QTextEdit, QHBoxLayout,
     QPushButton, QLineEdit, QTreeWidget, QTreeWidgetItem, QHeaderView
 )
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, QThread
 import sqlite3
 from datetime import datetime
+from server import MQTT5Server
 
+class ServerThread(QThread):
+    def __init__(self, server_instance):
+        super().__init__()
+        self.server_instance = server_instance
+
+    def run(self):
+        self.server_instance.server_start()
 
 class MQTTGUI(QMainWindow):
     def __init__(self, db_name="mqtt_server.db"):
@@ -15,6 +23,9 @@ class MQTTGUI(QMainWindow):
         self.db_name = db_name
         self.setWindowTitle("MQTT Broker Dashboard")
         self.setGeometry(100, 100, 1000, 600)
+
+        self.server_instance = MQTT5Server()
+        self.server_thread = None
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -37,6 +48,8 @@ class MQTTGUI(QMainWindow):
         self.init_subscribed_clients_tab()
         self.init_qos_messages_tab()
 
+        self.init_server_controls()
+
         # Set up timers for refreshing data
         self.refresh_interval = 5000  # milliseconds
         self.setup_timers()
@@ -54,6 +67,48 @@ class MQTTGUI(QMainWindow):
         self.load_connected_clients()  # Refresh connected clients
         self.load_subscribed_clients()
         self.load_qos_messages()
+
+    # Server Controls
+    def init_server_controls(self):
+        control_layout = QHBoxLayout()
+
+        self.start_server_button = QPushButton("Start Server")
+        self.start_server_button.clicked.connect(self.start_server)
+
+        self.stop_server_button = QPushButton("Stop Server")
+        self.stop_server_button.clicked.connect(self.stop_server)
+        self.stop_server_button.setEnabled(False)
+
+        control_layout.addWidget(self.start_server_button)
+        control_layout.addWidget(self.stop_server_button)
+
+        main_layout = QVBoxLayout()
+        main_layout.addLayout(control_layout)
+        self.server_control_widget = QWidget()
+        self.server_control_widget.setLayout(main_layout)
+
+        self.tabs.addTab(self.server_control_widget, "Server Controls")
+
+    def start_server(self):
+        if not self.server_thread or not self.server_thread.isRunning():
+            self.server_instance.shutdown_event.clear()
+            self.server_thread = ServerThread(self.server_instance)
+
+            self.server_thread.start()
+
+            self.start_server_button.setEnabled(False)
+
+            self.stop_server_button.setEnabled(True)
+
+    def stop_server(self):
+        if self.server_thread and self.server_thread.isRunning():
+            #self.server_instance.server_stop()
+            #self.server_thread.wait()
+            #self.server_thread = None
+            self.server_instance.shutdown_event.set()
+            self.server_thread.wait()
+            (self.start_server_button.setEnabled(True))
+            self.stop_server_button.setEnabled(False)
 
     # Topic History Tab
     def init_topic_history_tab(self):

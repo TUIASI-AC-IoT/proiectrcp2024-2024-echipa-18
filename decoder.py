@@ -72,11 +72,17 @@ class MQTTDecoder:
                 properties["response_topic"], index = self._decode_string(data, index)
             elif prop_id == 0x09:  # Correlation Data (Binary Data)
                 properties["correlation_data"], index = self._decode_binary_data(data, index)
+            elif prop_id == 0x26:  # User Properties (UTF-8 key-value pairs)
+                if "user_properties" not in properties:
+                    properties["user_properties"] = []
+                key, index = self._decode_string(data, index)
+                value, index = self._decode_string(data, index)
+                properties["user_properties"].append({"key": key, "value": value})
             else:
-                # Skip unknown properties
+                # Log and skip unknown properties
                 print(f"Skipping unknown property ID: {prop_id} at index {index - 1}")
-                if index + 1 <= end_index:
-                    # Assume a 1-byte property for skipping unknown fixed-length properties
+                if index < end_index:
+                    # Safely skip 1-byte properties or advance to the next byte
                     index += 1
                 else:
                     raise ValueError(f"Malformed property at index {index - 1}")
@@ -318,4 +324,3 @@ class MQTTDecoder:
             "packet_type": "DISCONNECT",
             "properties": properties
         }
-
