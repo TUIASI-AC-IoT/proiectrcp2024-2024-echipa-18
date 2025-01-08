@@ -6,7 +6,6 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QTimer, QThread
 import sqlite3
-from datetime import datetime
 from server import MQTT5Server
 
 class ServerThread(QThread):
@@ -91,6 +90,7 @@ class MQTTGUI(QMainWindow):
 
     def start_server(self):
         if not self.server_thread or not self.server_thread.isRunning():
+            print("Starting Server....................")
             self.server_instance.shutdown_event.clear()
             self.server_thread = ServerThread(self.server_instance)
 
@@ -99,12 +99,14 @@ class MQTTGUI(QMainWindow):
             self.start_server_button.setEnabled(False)
 
             self.stop_server_button.setEnabled(True)
+            print("Server Started")
 
     def stop_server(self):
         if self.server_thread and self.server_thread.isRunning():
             #self.server_instance.server_stop()
             #self.server_thread.wait()
             #self.server_thread = None
+            print(f'Stopping server........................')
             self.server_instance.shutdown_event.set()
             self.server_thread.wait()
             (self.start_server_button.setEnabled(True))

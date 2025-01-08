@@ -17,8 +17,11 @@ from packet_creator import (
     create_disconnect_packet
 )
 
+#TO DO
+#clean session sa facem management mai bine
+
 class MQTT5Server():
-    def __init__(self, IP_ADDR = '192.168.77.13', PORT = 5000, max_connections=50, db_file="mqtt_server.db"):
+    def __init__(self, IP_ADDR = '127.0.0.1', PORT = 5000, max_connections=50, db_file="mqtt_server.db"):
         self.IP_ADDR = IP_ADDR
         self.PORT = PORT
         self.s_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -234,6 +237,8 @@ class MQTT5Server():
                             self.active_connections.pop(connected_client.client_id, None)
                             print(f"Connection closed with {addr}")
                         conn.close()
+                        if not self.active_connections:
+                            print(f'Server is shut down')
 
                 except socket.timeout:
                     print(f"Connection to {addr} timed out")
@@ -289,9 +294,5 @@ class MQTT5Server():
                 print(f"Error in server loop: {e}")
                 break
 
-    def close_server(self):
-        print("Shutting down the server...")
-        self.shutdown_event.set()  # Signal the server loop to stop
-        self.s_server.close()  # Close the server socket
-        print("Server has been shut down.")
+
 
