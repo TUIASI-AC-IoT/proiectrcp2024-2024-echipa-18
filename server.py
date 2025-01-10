@@ -38,18 +38,14 @@ class MQTT5Server():
         # Create a new SQLServer instance for this thread
         print(f"Connection accepted from {addr}")
         connected_client = None
-        last_packet_time = time()
         try:
             while True:
                 try:
                     if not self.shutdown_event.is_set():
+                        if connected_client and connected_client not in self.active_connections:
+                            conn.settimeout(connected_client.keep_alive * 1.5)
                         data = conn.recv(512)
-                        if connected_client and connected_client.keep_alive > 0:
-                            elapsed_time = time() - last_packet_time
-                            if elapsed_time > connected_client.keep_alive * 1.5:
-                                print(f"Keep-alive timeout for client '{connected_client.client_id}'")
-                                raise TimeoutError(
-                                    f"Client '{connected_client.client_id}' failed to send a packet within the keep-alive period.")
+
                         if not data:
                             print(f"Client at {addr} disconnected")
                             break
