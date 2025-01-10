@@ -5,6 +5,7 @@ from message import Message
 from sqlServer import SQLServer
 from decoder import MQTTDecoder
 from threading import Event
+from time import time
 from message_dispatcher import MessageDispatcher
 from packet_creator import (
     create_connack_packet,
@@ -17,11 +18,10 @@ from packet_creator import (
     create_disconnect_packet
 )
 
-#TO DO
-#clean session sa facem management mai bine
+
 
 class MQTT5Server():
-    def __init__(self, IP_ADDR = '127.0.0.1', PORT = 5000, max_connections=50, db_file="mqtt_server.db"):
+    def __init__(self, IP_ADDR = '192.168.208.13', PORT = 5000, max_connections=50, db_file="mqtt_server.db"):
         self.IP_ADDR = IP_ADDR
         self.PORT = PORT
         self.s_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -38,15 +38,22 @@ class MQTT5Server():
         # Create a new SQLServer instance for this thread
         print(f"Connection accepted from {addr}")
         connected_client = None
-
+        last_packet_time = time()
         try:
             while True:
                 try:
                     if not self.shutdown_event.is_set():
                         data = conn.recv(512)
+                        if connected_client and connected_client.keep_alive > 0:
+                            elapsed_time = time() - last_packet_time
+                            if elapsed_time > connected_client.keep_alive * 1.5:
+                                print(f"Keep-alive timeout for client '{connected_client.client_id}'")
+                                raise TimeoutError(
+                                    f"Client '{connected_client.client_id}' failed to send a packet within the keep-alive period.")
                         if not data:
                             print(f"Client at {addr} disconnected")
                             break
+
                         print(data)
                         decoded_packet = self.decoder.decode_mqtt_packet(data)
                         print(f"Decoded packet from {addr}: {decoded_packet}")
@@ -246,6 +253,7 @@ class MQTT5Server():
                 except socket.error as e:
                     print(f"Socket error with {addr}: {e}")
                     break
+
                 except Exception as e:
                     print(f"Error processing packet from {addr}: {e}")
                     break
